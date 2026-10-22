@@ -1,0 +1,106 @@
+# CSC413 Project Plan: Diffusion Transformer for Synthetic Endoscopy Video
+
+Oct 21, 2026 · @Marvin
+
+## Summary
+
+I will train a small diffusion transformer to generate short endoscopy clips containing lesions. The project tests whether pretraining on plentiful normal endoscopy video helps the model produce realistic, new lesion clips when lesion data is scarce, instead of copying its few training examples.
+
+The course version uses public data only. The same code can later run on private hospital data in my research project.
+
+## Research question
+
+When lesion clips are scarce, does pretraining the generator on many normal endoscopy clips:
+
+1. make the generated lesion clips more realistic, and
+2. reduce copying of the training clips (memorization)?
+
+A small generator trained only on a few clips tends to reproduce them. Pretraining gives it general knowledge of endoscopy appearance and camera motion, so the few lesion clips only need to teach what a lesion looks like.
+
+## Data
+
+The data comes from [HyperKvasir](https://datasets.simula.no/hyper-kvasir/), a public gastrointestinal endoscopy dataset with 373 videos (about 11.62 hours, 1,059,519 frames). Its terms ask users to cite the dataset paper. Hospital data stays out of the course repo.
+
+| Pool | Contents | Labels needed | Used for |
+| --- | --- | --- | --- |
+| Pretraining pool | All available clips, mostly normal tissue | None | Teaching general endoscopy appearance and motion |
+| Lesion pool | The few clips with a visible lesion | Lesion present or not | Fine-tuning and the from-scratch baseline |
+
+Preprocessing:
+
+1. Cut each video into 16-frame clips.
+2. Downsample frames to 64×64 pixels.
+3. Keep every few frames, since consecutive frames are nearly identical.
+4. Split train, validation and test by video, not by clip, so near-identical clips never appear on both sides.
+
+Open question: how many lesion videos HyperKvasir contains and how long they are. I will count these before the proposal.
+
+## Model
+
+The model is a small video diffusion transformer built from scratch, so its forward pass can be fully explained and its parameters counted. The task is unconditional video generation: input is random noise shaped like a clip, output is a 16-frame 64×64 clip.
+
+One training step:
+
+1. Take a real clip and add Gaussian noise at a randomly chosen strength.
+2. Cut each frame into small patches. Each patch becomes a token, with embeddings for its frame and position.
+3. Pass the tokens through transformer blocks. Each block alternates attention within a frame (appearance) and across frames (motion). The noise strength is fed into every block.
+4. Predict the noise that was added. The loss is the mean squared error between predicted and true noise.
+
+Generation starts from pure noise and removes the predicted noise over about 50 steps until a clean clip remains.
+
+After generation, the existing YOLO detector finds the lesion in the first frame, and MedSAM2 or a tracker follows it through the clip. This labels synthetic clips without a box-conditioned generator.
+
+Easier variant if needed: give the model a real first frame and generate the following frames (video prediction). The same model can be trained to do both.
+
+## Experiments
+
+The core comparison is a from-scratch model against a pretrained-then-fine-tuned model, both evaluated on the same held-out lesion clips.
+
+| Model | Training | What it shows |
+| --- | --- | --- |
+| A. From scratch | Lesion clips only | Baseline under data scarcity |
+| B. Pretrained + fine-tuned | All clips first, then lesion clips | Whether general pretraining helps |
+| Ablation | Model B without across-frame attention | Whether modelling motion matters |
+
+To show the effect of scarcity, A and B are repeated with 25%, 50% and 100% of the lesion clips.
+
+## Evaluation
+
+Each model is judged on realism, motion, novelty and downstream usability.
+
+| Question | Measure |
+| --- | --- |
+| Are the frames realistic? | Image-quality score (e.g. FID) against held-out real frames, plus visual examples |
+| Is the motion smooth? | Frame-to-frame change in generated vs. real clips |
+| New or copied? | Distance from each generated clip to its nearest training clip, compared with held-out real clips |
+| Usable downstream? | Share of generated clips where the YOLO detector finds a lesion |
+
+The expected result is that B beats A, especially with less lesion data. If it does not, the analysis explains why, for example too little data or too small a model.
+
+## Timeline
+
+The plan runs four weeks, solo, with the core comparison in week 3.
+
+&#91;embedded content: 4-week solo plan · 1 gate\]
+
+Week 1 ends with a sanity check: the model must overfit a single clip before full training. If real endoscopy clips are unusable by the end of week 2, the same plan continues on Moving MNIST.
+
+## Risks and fallback
+
+The main risks are compute and clip quality; each has a planned response.
+
+- **Compute.** Video diffusion is expensive, so clips stay short (16 frames) and small (64×64).
+- **Quality.** Clips from a one-month, from-scratch model will likely be blurry. The analysis explains why.
+- **Memorization.** With few lesion clips, the model may copy them. This is measured directly, not assumed away.
+- **Medical validity.** A generated lesion only looks like one; it is not confirmed dysplasia without a clinician. This goes in the ethics section, together with patient privacy if the model copies real videos.
+- **Fallback.** If real video proves too hard, the same model on Moving MNIST still answers the pretraining-vs-copying question.
+
+Training the RT-GI detector on synthetic data is follow-up research, not part of this course project.
+
+References
+
+- [HyperKvasir dataset](https://datasets.simula.no/hyper-kvasir/), Borgli et al., Scientific Data, 2020
+- [On Memorization in Diffusion Models](https://arxiv.org/html/2310.02664v2), Gu et al., TMLR 2025
+- [MCVD: Masked Conditional Video Diffusion](https://github.com/voletiv/mcvd-pytorch), Voleti et al., NeurIPS 2022
+- [ColoDiff: colonoscopy video generation](https://arxiv.org/pdf/2602.23203), diffusion transformer for synthetic colonoscopy video
+- [Few-shot synthetic data with LoRA-adapted diffusion](https://www.alphaxiv.org/abs/2605.11898), fine-tuning on 20 to 50 real images
